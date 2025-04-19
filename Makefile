@@ -1,0 +1,72 @@
+ifndef MLIR_AIE_PATH
+  MLIR_AIE_PATH := $(dir $(CURDIR))/mlir-aie
+endif
+
+# The application folder is the current folder
+srcdir := $(CURDIR)
+
+# Include the common makefile from the mlir-aie repo
+include $(MLIR_AIE_PATH)/programming_examples/makefile-common
+
+# Application parameters
+devicename ?= $(if $(filter 1,$(NPU2)),npu2,npu)
+targetname = aie2
+
+in1_size  = 16384  # in bytes
+in2_size  = 16384     # in bytes, must always be 4 (1x int32)
+out_size  = 4  # in bytes, equal to in1_size
+trace_size= 8192
+
+colshift ?= $(if $(filter 1,$(NPU2)),0,1)
+aie_py_src = $(targetname).py
+
+# Main targets
+all: build/final.xclbin build/insts.bin
+
+build/scale.o: $(srcdir)/kernel.cpp
+	@mkdir -p $(@D)
+ifeq ($(devicename),npu)
+	cd $(@D) && ${PEANO_INSTALL_DIR}/bin/clang++ ${PEANOWRAP2_FLAGS} -c $< -o $(@F)
+else ifeq ($(devicename),npu2)
+	cd $(@D) && ${PEANO_INSTALL_DIR}/bin/clang++ ${PEANOWRAP2P_FLAGS} -c $< -o $(@F)
+else
+	@echo "Device type not supported"
+endif
+
+build/aie.mlir: $(srcdir)/$(aie_py_src)
+	@mkdir -p $(@D)
+	python3 $< -d $(devicename) -i1s $(in1_size) -i2s $(in2_size) -os $(out_size) > $@
+
+build/aie_trace.mlir: $(srcdir)/$(aie_py_src)
+	@mkdir -p $(@D)
+	python3 $< -d $(devicename) -i1s $(in1_size) -i2s $(in2_size) -os $(out_size) -t $(trace_size) > $@
+
+build/final.xclbin: build/aie.mlir build/scale.o
+	@mkdir -p $(@D)
+	cd $(@D) && aiecc.py --aie-generate-xclbin --no-compile-host --xclbin-name=$(@F) \
+		--no-xchesscc --no-xbridge \
+		--aie-generate-npu-insts --npu-insts-name=insts.bin $(<:%=../%)
+
+build/final_trace.xclbin: build/aie_trace.mlir build/scale.o
+	@mkdir -p $(@D)
+	cd $(@D) && aiecc.py --aie-generate-xclbin --no-compile-host --xclbin-name=$(@F) \
+		--no-xchesscc --no-xbridge \
+		--aie-generate-npu-insts --npu-insts-name=insts.bin $(<:%=../%)
+
+$(targetname).exe: $(srcdir)/test.cpp
+	@rm -rf _build
+	@mkdir -p _build
+	# Pass MLIR_AIE_PATH and size macros to CMake via -D flags
+	cd _build && ${powershell} cmake $(srcdir) -DMLIR_AIE_PATH="$(MLIR_AIE_PATH)" -DTARGET_NAME=$(targetname) -DIN1_SIZE=$(in1_size) -DIN2_SIZE=$(in2_size) -DOUT_SIZE=$(out_size)
+	cd _build && ${powershell} cmake --build . --config Release
+ifeq ("$(powershell)","powershell.exe")
+	@cp _build/$(targetname).exe $@
+else
+	@cp _build/$(targetname) $@
+endif
+
+run: $(targetname).exe build/final.xclbin build/insts.bin
+	env MLIR_AIE_PATH="$(MLIR_AIE_PATH)" ${powershell} ./$< -x build/final.xclbin -i build/insts.bin -k MLIR_AIE
+
+clean: clean_trace
+	@rm -rf build _build $(targetname)*.exe
