@@ -13,8 +13,8 @@ devicename ?= $(if $(filter 1,$(NPU2)),npu2,npu)
 targetname = aie2
 
 in1_size  = 16384  # in bytes
-in2_size  = 16384     # in bytes, must always be 4 (1x int32)
-out_size  = 4  # in bytes, equal to in1_size
+in2_size  = 4      # in bytes, must always be 4 (1x int32)
+out_size  = 16384  # in bytes, equal to in1_size
 trace_size= 8192
 
 colshift ?= $(if $(filter 1,$(NPU2)),0,1)
@@ -23,7 +23,7 @@ aie_py_src = $(targetname).py
 # Main targets
 all: build/final.xclbin build/insts.bin
 
-build/scale.o: $(srcdir)/kernel.cpp
+build/scale.o: $(srcdir)/vector_scalar_mul.cc
 	@mkdir -p $(@D)
 ifeq ($(devicename),npu)
 	cd $(@D) && ${PEANO_INSTALL_DIR}/bin/clang++ ${PEANOWRAP2_FLAGS} -c $< -o $(@F)
@@ -67,6 +67,25 @@ endif
 
 run: $(targetname).exe build/final.xclbin build/insts.bin
 	env MLIR_AIE_PATH="$(MLIR_AIE_PATH)" ${powershell} ./$< -x build/final.xclbin -i build/insts.bin -k MLIR_AIE
+
+run_py: build/final.xclbin build/insts.bin
+	${powershell} python3 $(srcdir)/test.py -x build/final.xclbin -i build/insts.bin -k MLIR_AIE \
+	    -i1s $(in1_size) -i2s $(in2_size) -os $(out_size)
+
+trace: $(targetname).exe build/final_trace.xclbin build/insts.bin
+	${powershell} ./$< -x build/final_trace.xclbin -i build/insts.bin -k MLIR_AIE -t $(trace_size)
+	$(MLIR_AIE_PATH)/programming_examples/utils/parse_trace.py --filename trace.txt --mlir build/aie_trace.mlir --colshift $(colshift) > trace_4b.json
+	$(MLIR_AIE_PATH)/programming_examples/utils/get_trace_summary.py --filename trace_4b.json
+
+# Currently Not Supported
+trace_py: build/final_trace.xclbin build/insts.bin
+	${powershell} python3 $(srcdir)/test.py -x build/final_trace.xclbin -i build/insts.bin -k MLIR_AIE \
+	    -t $(trace_size) -i1s $(in1_size) -i2s $(in2_size) -os $(out_size)
+	$(MLIR_AIE_PATH)/programming_examples/utils/parse_trace.py --filename trace.txt --mlir build/aie_trace.mlir --colshift $(colshift) > trace_4b.json
+	$(MLIR_AIE_PATH)/programming_examples/utils/get_trace_summary.py --filename trace_4b.json
+
+clean_trace:
+	@rm -rf tmpTrace trace.txt parse*json trace*json
 
 clean: clean_trace
 	@rm -rf build _build $(targetname)*.exe
