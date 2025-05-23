@@ -10,19 +10,10 @@ import sys
 
 from aie.iron import Kernel, ObjectFifo, Program, Runtime, Worker
 from aie.iron.placers import SequentialPlacer
-from aie.iron.device import NPU1Col1, NPU2Col1
+from aie.iron.device import NPU1Col1
 from aie.iron.controlflow import range_
 
-dev = NPU2Col1()
-
-if len(sys.argv) > 1:
-    if sys.argv[1] == "npu":
-        dev = NPU1Col1()
-    elif sys.argv[1] == "npu2":
-        dev = NPU2Col1()
-    else:
-        raise ValueError("[ERROR] Device name {} is unknown".format(sys.argv[1]))
-
+dev = NPU1Col1()
 tensor_size = 4096
 tile_size = tensor_size // 4
 
@@ -45,6 +36,7 @@ of_factor = ObjectFifo(scalar_ty, name="infactor")
 # Output data movement
 of_out = ObjectFifo(tile_ty, name="out")
 
+
 # Task for the core to perform
 def core_fn(of_in, of_factor, of_out, scale_scalar):
     elem_factor = of_factor.acquire(1)
@@ -55,6 +47,7 @@ def core_fn(of_in, of_factor, of_out, scale_scalar):
         of_in.release(1)
         of_out.release(1)
     of_factor.release(1)
+
 
 # Create a worker to perform the task
 my_worker = Worker(core_fn, [of_in.cons(), of_factor.cons(), of_out.prod(), scale_fn])
