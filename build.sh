@@ -29,6 +29,7 @@ aiecc.py \
 
 clang++ \
     -I$XILINX_XRT/include \
+    -I../deps \
     -L$XILINX_XRT/lib \
     -lxrt_coreutil -pthread \
     -o main \

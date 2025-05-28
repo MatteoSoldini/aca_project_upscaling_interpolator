@@ -3,6 +3,11 @@
 input.*
 output.*
 
+# Buils artefacts
 build/
 
+# Notebook artefacts
 *ipynb*
+
+# Images
+*.bmp
