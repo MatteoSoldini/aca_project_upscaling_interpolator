@@ -53,7 +53,7 @@ void conv2d3k2x(
     for (int32_t out_x = 0; out_x < out_w; out_x++) {
         int32_t in_x = out_x / 2;
 
-        uint64_t sum = 0;
+        int32_t sum = 0;
         for (int32_t m = 0; m < 3; m++) {
             for (int32_t n = 0; n < 3; n++) {
                 int32_t w = weight[m] * weight[n];
@@ -83,19 +83,21 @@ void conv2d5k2x(
     uint8_t *in_row_2,  //  0
     uint8_t *in_row_3,  //  1
     uint8_t *in_row_4,  //  2
-    uint8_t *out_row, int32_t out_w
-    //int32_t *kernels    // [out_w, 5]
+    uint8_t *out_row, int32_t out_w,
+    int16_t *kernels    // [2, 5, 5]
 ) {
-    int32_t weight[5] = {8, 4, 4, 4, 8};
-    
     for (int32_t out_x = 0; out_x < out_w; out_x++) {
         int32_t in_x = out_x / 2;
-
-        uint64_t sum = 0;
+        int32_t k_x = out_x % 2;
+        
+        int32_t pixel = 0;
+        int32_t acc = 0;
         for (int32_t m = 0; m < 5; m++) {
             for (int32_t n = 0; n < 5; n++) {
-                int32_t w = weight[m] * weight[n];  //kernels[out_x + m] * kernels[out_x + n];
-                
+                int32_t idx = k_x * 25 + m * 5 + n;
+                int16_t w = kernels[idx];
+                acc += w;
+
                 // select row
                 uint8_t *in_row = 0;
                 if (n == 0)      in_row = in_row_0;
@@ -108,11 +110,17 @@ void conv2d5k2x(
                 int32_t k_in_x = in_x + m - 2;
                 if (k_in_x < 0) k_in_x = 0;
                 if (k_in_x > out_w / 2 - 1) k_in_x = out_w / 2 - 1;
-                
-                sum += (uint64_t)(in_row[k_in_x] * 1000) / w;
+              
+                pixel += (int32_t)(in_row[k_in_x]) * w;
             }
         }
+        
+        pixel /= acc;
+        
+        // clamp
+        if (pixel < 0) pixel = 0;
+        if (pixel > 255) pixel = 255;
 
-        out_row[out_x] = sum / 1000;
+        out_row[out_x] = pixel;
     }
 }

@@ -4,6 +4,7 @@
 #include <string.h>
 #include <cassert>
 #include <chrono>
+#include <math.h>
 
 #include "xrt/xrt_device.h"
 #include "xrt/xrt_kernel.h"
@@ -16,6 +17,8 @@
 
 #define INPUT_FILE "input.bmp"
 #define SCALE_FACTOR 2.0f
+
+#define INT_SCALE (1 << 12)
 
 std::vector<uint32_t> load_file(std::string file_path) {
     // Open file in binary mode
@@ -42,6 +45,11 @@ std::vector<uint32_t> load_file(std::string file_path) {
     return content;
 }
 
+double lanczos_kernel(double x, int32_t a) {
+    if (x == 0.0f) return 1.0f;
+    return a * sin(M_PI * x) * sin(M_PI * x / a) / pow(x, 2) / pow(M_PI, 2);
+}
+
 void neareast_neightbor(
     uint8_t *in_pixels, uint32_t in_w, uint32_t in_h,
     uint8_t *out_pixels, uint32_t out_w, uint32_t out_h
@@ -55,6 +63,59 @@ void neareast_neightbor(
             uint32_t in_y = j / ratio_y;
             
             out_pixels[i + j * out_w] = in_pixels[in_x + in_y * in_w];
+        }
+    }
+}
+
+int32_t clamp(int32_t in, int32_t low, int32_t high) {
+    if (in < low) return low;
+    if (in > high) return high;
+    return in;
+}
+
+void lanczos(
+    uint8_t *in_pixels,
+    int32_t in_w,
+    int32_t in_h,
+    uint8_t *out_pixels,
+    int32_t out_w,
+    int32_t out_h,
+    int32_t a
+) {
+    if (!(a > 0)) {
+        printf("a=%i should be greater than 0\n", a);
+        return;
+    }
+
+    double ratio_x = (double)in_w / out_w;
+    double ratio_y = (double)in_h / out_h;
+    
+    for (int32_t i = 0; i < out_w; i++) {
+        for (int32_t j = 0; j < out_h; j++) {
+            int32_t in_x = i * ratio_x;
+            int32_t in_y = j * ratio_y;
+
+            // convolve
+            double sum = 0.0f;
+            double pixel = 0.0f;
+            for (int32_t m = -a + 1; m <= a; m++) {
+                for (int32_t n = -a + 1; n <= a; n++) {
+                    double x = in_x - i * ratio_x + m;
+                    double y = in_y - j * ratio_y + n;
+                    
+                    double weight = lanczos_kernel(x, a) * lanczos_kernel(y, a);
+                    sum += weight;
+                                        
+                    int32_t real_in_x = clamp(in_x + m, 0, in_w - 1);
+                    int32_t real_in_y = clamp(in_y + n, 0, in_h - 1);
+                    
+                    int32_t idx = real_in_x + real_in_y * in_w;
+                    pixel += in_pixels[idx] * weight;
+                }
+            }
+
+            int32_t idx = i + j * out_w;
+            out_pixels[idx] = clamp((uint32_t)(pixel / sum), 0, 255);
         }
     }
 }
@@ -90,28 +151,43 @@ int main(void) {
     auto in_buf = xrt::bo(device, in_size * sizeof(uint8_t),
                         XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(3));
     auto out_buf = xrt::bo(device, out_size * sizeof(uint8_t),
-                         XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(4));
-    auto kernel_buf = xrt::bo(device, out_size * kernel_size * sizeof(int32_t),
                          XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(5));
+    auto kernel_buf = xrt::bo(device, out_size * kernel_size * kernel_size * sizeof(uint16_t),
+                         XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(4));
 
     // Copy instruction stream to xrt buffer object
-    void *bufInstr = bo_instr.map<void *>();
-    memcpy(bufInstr, instr_v.data(), instr_v.size() * sizeof(int));
+    void *instr_map = bo_instr.map<void *>();
+    memcpy(instr_map, instr_v.data(), instr_v.size() * sizeof(int));
 
-    uint8_t *bufInA = in_buf.map<uint8_t *>();
-    memcpy(bufInA, pixels, in_size * sizeof(uint8_t));    
+    uint8_t *in_map = in_buf.map<uint8_t *>();
+    memcpy(in_map, pixels, in_size * sizeof(uint8_t));    
 
     // Zero out buffer out_buf
-    uint8_t *bufOut = out_buf.map<uint8_t *>();
-    memset(bufOut, 0, out_size * sizeof(uint8_t));
+    uint8_t *out_map = out_buf.map<uint8_t *>();
+    memset(out_map, 0, out_size * sizeof(uint8_t));
 
-    int32_t *kernel_map = kernel_buf.map<int32_t *>();
-    for (uint32_t x = 0; x < o_w; x++) {
-        kernel_map[x + o_w] =     8;    // 1/8
-        kernel_map[x + o_w + 1] = 4;    // 1/4
-        kernel_map[x + o_w + 2] = 4;    // 1/4
-        kernel_map[x + o_w + 3] = 4;    // 1/4
-        kernel_map[x + o_w + 4] = 8;    // 1/8
+    int16_t *kernel_map = kernel_buf.map<int16_t *>();
+    for (uint32_t x = 0; x < 2; x++) {
+        for (uint32_t y = 0; y < 2; y++) {
+            for (int32_t m = 0; m < kernel_size; m++) {
+                for (int32_t n = 0; n < kernel_size; n++) {
+                    uint32_t in_x = x / 2;
+                    uint32_t in_y = y / 2;
+
+                    double i = in_x - x * 0.5f + (m - 2);
+                    double j = in_y - y * 0.5f + (n - 2);
+                    
+                    double weight = lanczos_kernel(i, 2) * lanczos_kernel(j, 2); 
+                    uint32_t idx = (x + y * 2) * kernel_size * kernel_size \
+                        + m * kernel_size \
+                        + n;
+                    
+                    kernel_map[idx] = weight * INT_SCALE;
+
+                    printf("(x: %lf, y %lf)> w: %lf\n", i, j, weight);
+                }
+            } 
+        }
     }
 
     // sync host to device memories
@@ -127,8 +203,8 @@ int main(void) {
         opcode,
         bo_instr, instr_v.size(),
         in_buf,
-        out_buf,
-        kernel_buf
+        kernel_buf,
+        out_buf
     );
     run.wait();
     auto stop = std::chrono::high_resolution_clock::now();
@@ -136,23 +212,23 @@ int main(void) {
     out_buf.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
     
     uint8_t *ref = (uint8_t *)malloc(o_w * o_h * sizeof(uint8_t));
-    neareast_neightbor(pixels, w, h, ref, o_w, o_h);
+    lanczos(pixels, w, h, ref, o_w, o_h, 2);
     
     stbi_write_bmp("ref_out.bmp", o_w, o_h, 1, ref);
-    stbi_write_bmp("aie_out.bmp", o_w, o_h, 1, bufOut);
+    stbi_write_bmp("aie_out.bmp", o_w, o_h, 1, out_map);
 
     uint64_t errors = 0;
     int32_t err_x = -1;
     int32_t err_y = -1;
     for (size_t y = 0; y < o_h; y++) {
         for (size_t x = 0; x < o_w; x++) {
-            if (ref[x + y * o_w] != bufOut[x + y * o_w]) {
+            if (ref[x + y * o_w] != out_map[x + y * o_w]) {
                 err_x = x;
                 err_y = y;
                 errors++;
             }
 
-            printf("(x: %4zu, y: %4zu)> %4u: %4u\n", x, y, ref[x + y * o_w], bufOut[x + y * o_w]);
+            printf("(x: %4zu, y: %4zu)> %4u: %4u\n", x, y, ref[x + y * o_w], out_map[x + y * o_w]);
         }
     }
 

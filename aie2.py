@@ -11,11 +11,11 @@ dev = NPU1Col1()
 
 w = 640
 h = 427
-scale_factor = 2.0  # FIXED
+scale_factor = 2.0  # Fixed
 o_w = int(w * scale_factor)
 o_h = int(h * scale_factor)
-#tile_size = o_w  # must be multiple of 4
-kernel_size = 5
+kernel_size = 5     # Fixed
+kernel_count = 4    # For 2x
 
 # Define tensor types
 #tensor_ty = np.ndarray[(tensor_size,), np.dtype[np.uint8]]
@@ -30,8 +30,8 @@ in_w_t =        np.int32
 in_h_t =        np.int32
 in_tile_t =     np.ndarray[(w,), np.dtype[np.uint8]]
 out_tile_t =    np.ndarray[(o_w,), np.dtype[np.uint8]]
-kernel_t =      np.ndarray[(o_w * kernel_size * o_h, ), np.dtype[np.int32]]
-kernel_tile_t = np.ndarray[(o_w * kernel_size, ), np.dtype[np.int32]]
+kernel_t =      np.ndarray[(kernel_count * kernel_size * kernel_size, ), np.dtype[np.uint16]]
+kernel_tile_t = np.ndarray[(2 * kernel_size * kernel_size, ), np.dtype[np.uint16]]
 
 #passthrough_fn = Kernel(
 #    "passthrough",
@@ -85,7 +85,7 @@ conv2d5k2x_fn = Kernel(
         in_tile_t,  # in_row_4
         out_tile_t, # out_row
         out_w_t,    # out_w
-        #kernel_tile_t
+        kernel_tile_t
     ],
 )
 
@@ -93,7 +93,7 @@ conv2d5k2x_fn = Kernel(
 in_fifo = ObjectFifo(
     in_tile_t,
     name="in",
-    default_depth=3
+    default_depth=5
 )
 
 out_fifo = ObjectFifo(
@@ -108,34 +108,47 @@ kernel_fifo = ObjectFifo(
 
 def core_fn(
     in_fifo,
+    kernel_fifo,
     out_fifo,
-    #kernel_fifo,
     kernel
 ):
     #for _ in range_(h):
     # The for loop does not seem to be necessary with worker while_true=True
     # This function is executed h (input height) times
     
+    k_row_1 = kernel_fifo.acquire(1)
+    k_row_2 = kernel_fifo.acquire(1)
+
     # First row
     in_row_0 = in_fifo.acquire(1)
     in_row_1 = in_fifo.acquire(1)
     in_row_2 = in_fifo.acquire(1)
 
-    for _ in range_(2): 
-        out_row = out_fifo.acquire(1)
-        #k_row = kernel_fifo.acquire(1)
-        kernel(
-            in_row_0,
-            in_row_0,
-            in_row_0,
-            in_row_1,
-            in_row_2,
-            out_row,
-            o_w,
-           # k_row
-        )
-        out_fifo.release(1)
-        #kernel_fifo.release(1)
+    out_row = out_fifo.acquire(1)
+    kernel(
+        in_row_0,
+        in_row_0,
+        in_row_0,
+        in_row_1,
+        in_row_2,
+        out_row,
+        o_w,
+        k_row_1
+    )
+    out_fifo.release(1)
+
+    out_row = out_fifo.acquire(1)
+    kernel(
+        in_row_0,
+        in_row_0,
+        in_row_0,
+        in_row_1,
+        in_row_2,
+        out_row,
+        o_w,
+        k_row_2
+    )
+    out_fifo.release(1)
     
     in_fifo.release(1)
     
@@ -145,21 +158,31 @@ def core_fn(
     in_row_2 = in_fifo.acquire(1)
     in_row_3 = in_fifo.acquire(1)
  
-    for _ in range_(2): 
-        #k_row = kernel_fifo.acquire(1)
-        out_row = out_fifo.acquire(1)
-        kernel(
-            in_row_0,
-            in_row_0,
-            in_row_1,
-            in_row_2,
-            in_row_3,
-            out_row,
-            o_w,
-            #k_row
-        )
-        out_fifo.release(1)
-        #kernel_fifo.release(1)
+    out_row = out_fifo.acquire(1)
+    kernel(
+        in_row_0,
+        in_row_0,
+        in_row_1,
+        in_row_2,
+        in_row_3,
+        out_row,
+        o_w,
+        k_row_1
+    )
+    out_fifo.release(1)
+
+    out_row = out_fifo.acquire(1)
+    kernel(
+        in_row_0,
+        in_row_0,
+        in_row_1,
+        in_row_2,
+        in_row_3,
+        out_row,
+        o_w,
+        k_row_2
+    )
+    out_fifo.release(1)
     
     in_fifo.release(1)
 
@@ -171,22 +194,32 @@ def core_fn(
         in_row_3 = in_fifo.acquire(1)
         in_row_4 = in_fifo.acquire(1) 
         
-        for _ in range_(2):
-            #k_row = kernel_fifo.acquire(1)
-            out_row = out_fifo.acquire(1)
-            kernel(
-                in_row_0,
-                in_row_1,
-                in_row_2,
-                in_row_3,
-                in_row_4,
-                out_row,
-                o_w,
-               # k_row
-            )
-            out_fifo.release(1)
-            #kernel_fifo.release(1)
+        out_row = out_fifo.acquire(1)
+        kernel(
+            in_row_0,
+            in_row_1,
+            in_row_2,
+            in_row_3,
+            in_row_4,
+            out_row,
+            o_w,
+            k_row_1
+        )
+        out_fifo.release(1)
 
+        out_row = out_fifo.acquire(1)
+        kernel(
+            in_row_0,
+            in_row_1,
+            in_row_2,
+            in_row_3,
+            in_row_4,
+            out_row,
+            o_w,
+            k_row_2
+        )
+        out_fifo.release(1)
+    
         in_fifo.release(1)    # release in_row_0
     
     # Second last row
@@ -195,21 +228,31 @@ def core_fn(
     in_row_2 = in_fifo.acquire(1)
     in_row_3 = in_fifo.acquire(1)
  
-    for _ in range_(2): 
-        #k_row = kernel_fifo.acquire(1)
-        out_row = out_fifo.acquire(1)
-        kernel(
-            in_row_0,
-            in_row_1,
-            in_row_2,
-            in_row_3,
-            in_row_3,
-            out_row,
-            o_w,
-            #k_row
-        )
-        out_fifo.release(1)
-        #kernel_fifo.release(1)
+    out_row = out_fifo.acquire(1)
+    kernel(
+        in_row_0,
+        in_row_1,
+        in_row_2,
+        in_row_3,
+        in_row_3,
+        out_row,
+        o_w,
+        k_row_1
+    )
+    out_fifo.release(1)
+
+    out_row = out_fifo.acquire(1)
+    kernel(
+        in_row_0,
+        in_row_1,
+        in_row_2,
+        in_row_3,
+        in_row_3,
+        out_row,
+        o_w,
+        k_row_2
+    )
+    out_fifo.release(1)
 
     in_fifo.release(1)
     
@@ -218,30 +261,41 @@ def core_fn(
     in_row_1 = in_fifo.acquire(1)    
     in_row_2 = in_fifo.acquire(1)    
     
-    for _ in range_(2):
-        #k_row = kernel_fifo.acquire(1)
-        out_row = out_fifo.acquire(1)
-        kernel(
-            in_row_0,
-            in_row_1,
-            in_row_2,
-            in_row_2,
-            in_row_2,
-            out_row,
-            o_w,
-            #k_row
-        )
-        out_fifo.release(1)
-        #kernel_fifo.release(1)        
+    out_row = out_fifo.acquire(1)
+    kernel(
+        in_row_0,
+        in_row_1,
+        in_row_2,
+        in_row_2,
+        in_row_2,
+        out_row,
+        o_w,
+        k_row_1
+    )
+    out_fifo.release(1)
 
+    out_row = out_fifo.acquire(1)
+    kernel(
+        in_row_0,
+        in_row_1,
+        in_row_2,
+        in_row_2,
+        in_row_2,
+        out_row,
+        o_w,
+        k_row_2
+    )
+    out_fifo.release(1)
+    
     in_fifo.release(3)
+    kernel_fifo.release(2)
 
 my_worker = Worker(
     core_fn,
     [
         in_fifo.cons(),
+        kernel_fifo.cons(),
         out_fifo.prod(),
-        #kernel_fifo.cons(),
         conv2d5k2x_fn
     ],
     while_true=False    # If true, will wrap the core_fn in a while(true) loop to ensure it runs until reconfiguration. Defaults to True.
@@ -251,16 +305,16 @@ my_worker = Worker(
 rt = Runtime()
 with rt.sequence(
     in_t,
-    out_t,
-    #kernel_t
+    kernel_t,
+    out_t
 ) as (
     a_in,
-    c_out,
-    #kernel_buf
+    kernel_buf,
+    c_out
 ):
     rt.start(my_worker)
     rt.fill(in_fifo.prod(), a_in)
-    #rt.fill(kernel_fifo.prod(), kernel_buf)
+    rt.fill(kernel_fifo.prod(), kernel_buf)
     rt.drain(out_fifo.cons(), c_out, wait=True)
 
 my_program = Program(dev, rt)
