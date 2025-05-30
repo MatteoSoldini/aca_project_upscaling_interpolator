@@ -41,3 +41,78 @@ void nearest_neightbor_2x(
 //        out[o_x] = o_y;
 //    }
 }
+
+void conv2d3k2x(
+    uint8_t *in_row_0,  // -1
+    uint8_t *in_row_1,  //  0
+    uint8_t *in_row_2,  //  1
+    uint8_t *out_row, int32_t out_w
+) {
+    int32_t weight[3] = {4, 2, 4};
+    
+    for (int32_t out_x = 0; out_x < out_w; out_x++) {
+        int32_t in_x = out_x / 2;
+
+        uint64_t sum = 0;
+        for (int32_t m = 0; m < 3; m++) {
+            for (int32_t n = 0; n < 3; n++) {
+                int32_t w = weight[m] * weight[n];
+                
+                // select row
+                uint8_t *in_row = 0;
+                if (n == 0)      in_row = in_row_0;
+                else if (n == 1) in_row = in_row_1;
+                else             in_row = in_row_2;
+               
+                // clamp 
+                int32_t k_in_x = in_x + m - 1;
+                if (k_in_x < 0) k_in_x = 0;
+                if (k_in_x > out_w / 2 - 1) k_in_x = out_w / 2 - 1;
+                
+                sum += (uint64_t)(in_row[k_in_x] * 1000) / w;
+            }
+        }
+
+        out_row[out_x] = sum / 1000;
+    }
+}
+
+void conv2d5k2x(
+    uint8_t *in_row_0,  // -2
+    uint8_t *in_row_1,  // -1 
+    uint8_t *in_row_2,  //  0
+    uint8_t *in_row_3,  //  1
+    uint8_t *in_row_4,  //  2
+    uint8_t *out_row, int32_t out_w
+    //int32_t *kernels    // [out_w, 5]
+) {
+    int32_t weight[5] = {8, 4, 4, 4, 8};
+    
+    for (int32_t out_x = 0; out_x < out_w; out_x++) {
+        int32_t in_x = out_x / 2;
+
+        uint64_t sum = 0;
+        for (int32_t m = 0; m < 5; m++) {
+            for (int32_t n = 0; n < 5; n++) {
+                int32_t w = weight[m] * weight[n];  //kernels[out_x + m] * kernels[out_x + n];
+                
+                // select row
+                uint8_t *in_row = 0;
+                if (n == 0)      in_row = in_row_0;
+                else if (n == 1) in_row = in_row_1;
+                else if (n == 2) in_row = in_row_2;
+                else if (n == 3) in_row = in_row_3;
+                else if (n == 4) in_row = in_row_4;
+
+                // clamp 
+                int32_t k_in_x = in_x + m - 2;
+                if (k_in_x < 0) k_in_x = 0;
+                if (k_in_x > out_w / 2 - 1) k_in_x = out_w / 2 - 1;
+                
+                sum += (uint64_t)(in_row[k_in_x] * 1000) / w;
+            }
+        }
+
+        out_row[out_x] = sum / 1000;
+    }
+}

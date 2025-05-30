@@ -80,6 +80,7 @@ int main(void) {
     uint32_t o_w = w * SCALE_FACTOR;
     uint32_t o_h = h * SCALE_FACTOR;
     uint32_t out_size = o_w * o_h;
+    uint32_t kernel_size = 5;    
 
     printf("w: %u, h: %u, tot: %u\n", w, h, in_size);
 
@@ -88,10 +89,10 @@ int main(void) {
                           XCL_BO_FLAGS_CACHEABLE, kernel.group_id(1));
     auto in_buf = xrt::bo(device, in_size * sizeof(uint8_t),
                         XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(3));
-    //auto bo_inFactor = xrt::bo(device, 1 * sizeof(int32_t),
-    //                         XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(4));
     auto out_buf = xrt::bo(device, out_size * sizeof(uint8_t),
                          XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(4));
+    auto kernel_buf = xrt::bo(device, out_size * kernel_size * sizeof(int32_t),
+                         XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(5));
 
     // Copy instruction stream to xrt buffer object
     void *bufInstr = bo_instr.map<void *>();
@@ -100,28 +101,39 @@ int main(void) {
     uint8_t *bufInA = in_buf.map<uint8_t *>();
     memcpy(bufInA, pixels, in_size * sizeof(uint8_t));    
 
-    // Initialize buffer bo_inFactor
-    //uint8_t *bufInFactor = bo_inFactor.map<uint8_t *>();
-    //*bufInFactor = 2; // TEMP
-
     // Zero out buffer out_buf
     uint8_t *bufOut = out_buf.map<uint8_t *>();
     memset(bufOut, 0, out_size * sizeof(uint8_t));
 
+    int32_t *kernel_map = kernel_buf.map<int32_t *>();
+    for (uint32_t x = 0; x < o_w; x++) {
+        kernel_map[x + o_w] =     8;    // 1/8
+        kernel_map[x + o_w + 1] = 4;    // 1/4
+        kernel_map[x + o_w + 2] = 4;    // 1/4
+        kernel_map[x + o_w + 3] = 4;    // 1/4
+        kernel_map[x + o_w + 4] = 8;    // 1/8
+    }
+
     // sync host to device memories
     bo_instr.sync(XCL_BO_SYNC_BO_TO_DEVICE);
     in_buf.sync(XCL_BO_SYNC_BO_TO_DEVICE);
-    //bo_inFactor.sync(XCL_BO_SYNC_BO_TO_DEVICE);
     out_buf.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+    kernel_buf.sync(XCL_BO_SYNC_BO_TO_DEVICE);
     
     unsigned int opcode = 3; // ??
 
     auto start = std::chrono::high_resolution_clock::now();
-    auto run = kernel(opcode, bo_instr, instr_v.size(), in_buf, out_buf);
+    auto run = kernel(
+        opcode,
+        bo_instr, instr_v.size(),
+        in_buf,
+        out_buf,
+        kernel_buf
+    );
     run.wait();
     auto stop = std::chrono::high_resolution_clock::now();
     
-    out_buf.sync(XCL_BO_SYNC_BO_FROM_DEVICE);    
+    out_buf.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
     
     uint8_t *ref = (uint8_t *)malloc(o_w * o_h * sizeof(uint8_t));
     neareast_neightbor(pixels, w, h, ref, o_w, o_h);
