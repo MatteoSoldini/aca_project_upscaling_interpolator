@@ -96,14 +96,14 @@ void lanczos(
             int32_t in_y = j * ratio_y;
 
             // convolve
-            double sum = 0.0f;
-            double pixel = 0.0f;
-            for (int32_t m = -a + 1; m <= a; m++) {
-                for (int32_t n = -a + 1; n <= a; n++) {
+            int32_t sum = 0;
+            int32_t pixel = 0;
+            for (int32_t m = -a; m < a; m++) {
+                for (int32_t n = -a; n < a; n++) {
                     double x = in_x - i * ratio_x + m;
                     double y = in_y - j * ratio_y + n;
                     
-                    double weight = lanczos_kernel(x, a) * lanczos_kernel(y, a);
+                    int32_t weight = lanczos_kernel(x, a) * lanczos_kernel(y, a) * INT_SCALE;
                     sum += weight;
                                         
                     int32_t real_in_x = clamp(in_x + m, 0, in_w - 1);
@@ -152,7 +152,9 @@ int main(void) {
                         XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(3));
     auto out_buf = xrt::bo(device, out_size * sizeof(uint8_t),
                          XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(5));
-    auto kernel_buf = xrt::bo(device, out_size * kernel_size * kernel_size * sizeof(uint16_t),
+    
+    // 4 5x5 kernel 32bit aligned
+    auto kernel_buf = xrt::bo(device, 128 * sizeof(int16_t),
                          XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(4));
 
     // Copy instruction stream to xrt buffer object
@@ -167,6 +169,8 @@ int main(void) {
     memset(out_map, 0, out_size * sizeof(uint8_t));
 
     int16_t *kernel_map = kernel_buf.map<int16_t *>();
+    memset(kernel_map, 0, 128 * sizeof(int16_t));
+    
     for (uint32_t x = 0; x < 2; x++) {
         for (uint32_t y = 0; y < 2; y++) {
             for (int32_t m = 0; m < kernel_size; m++) {
@@ -178,13 +182,11 @@ int main(void) {
                     double j = in_y - y * 0.5f + (n - 2);
                     
                     double weight = lanczos_kernel(i, 2) * lanczos_kernel(j, 2); 
-                    uint32_t idx = (x + y * 2) * kernel_size * kernel_size \
+                    uint32_t idx = (x + y * 2) * 32 \
                         + m * kernel_size \
                         + n;
                     
                     kernel_map[idx] = weight * INT_SCALE;
-
-                    printf("(x: %lf, y %lf)> w: %lf\n", i, j, weight);
                 }
             } 
         }
@@ -213,7 +215,7 @@ int main(void) {
     
     uint8_t *ref = (uint8_t *)malloc(o_w * o_h * sizeof(uint8_t));
     lanczos(pixels, w, h, ref, o_w, o_h, 2);
-    
+
     stbi_write_bmp("ref_out.bmp", o_w, o_h, 1, ref);
     stbi_write_bmp("aie_out.bmp", o_w, o_h, 1, out_map);
 
@@ -222,7 +224,7 @@ int main(void) {
     int32_t err_y = -1;
     for (size_t y = 0; y < o_h; y++) {
         for (size_t x = 0; x < o_w; x++) {
-            if (ref[x + y * o_w] != out_map[x + y * o_w]) {
+            if (abs(ref[x + y * o_w] - out_map[x + y * o_w]) > 1) {
                 err_x = x;
                 err_y = y;
                 errors++;

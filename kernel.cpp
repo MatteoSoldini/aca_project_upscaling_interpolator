@@ -1,5 +1,9 @@
 #include <stdint.h>
 
+#include <aie_api/aie.hpp>
+
+#define INT_SCALE (1 << 12)
+
 void vector_scalar_mul_aie_scalar(int32_t *a, int32_t *c, int32_t *factor,
                                   int32_t N) {
   for (int i = 0; i < N; i++) {
@@ -77,7 +81,8 @@ void conv2d3k2x(
     }
 }
 
-void conv2d5k2x(
+
+void conv2d5k2x_scalar(
     uint8_t *in_row_0,  // -2
     uint8_t *in_row_1,  // -1 
     uint8_t *in_row_2,  //  0
@@ -123,4 +128,49 @@ void conv2d5k2x(
 
         out_row[out_x] = pixel;
     }
+}
+
+extern "C" {
+void conv2d5k2x_aie(
+    uint8_t *in_row_0,  // -2
+    uint8_t *in_row_1,  // -1 
+    uint8_t *in_row_2,  //  0
+    uint8_t *in_row_3,  //  1
+    uint8_t *in_row_4,  //  2
+    uint8_t *out_row, int32_t out_w,
+    int16_t *kernels    // [2, 5, 5] 32 bit aligned
+) {
+    aie::vector<int16_t, 64> kernel_vec = aie::load_v<64>(kernels);
+    aie::vector<int16_t, 32> in = aie::zeros<int16_t, 32>();
+
+    for (uint32_t i = 0; i < out_w/2; i++) {
+        // fill input vector
+        for (uint32_t k_x = 0; k_x < 5; k_x++) {
+            // clamp
+            int32_t in_x = i + k_x - 2;
+            if (in_x < 0) in_x = 0;
+            if (in_x > out_w/2 - 1) in_x = out_w/2 - 1;            
+
+            in[5*k_x]     = in_row_0[in_x];
+            in[5*k_x + 1] = in_row_1[in_x];
+            in[5*k_x + 2] = in_row_2[in_x];
+            in[5*k_x + 3] = in_row_3[in_x];
+            in[5*k_x + 4] = in_row_4[in_x];
+        }
+        
+        // run the two convolutions
+        for (uint32_t k = 0; k < 2; k++) {
+            aie::vector<int16_t, 32> kernel_tile_vec = kernel_vec.extract<32>(k);
+            aie::accum<acc32, 32> s = aie::mul(in, kernel_tile_vec);
+            
+            int32_t pixel = aie::reduce_add(aie::to_vector<int32_t>(s));
+            int32_t sum = aie::reduce_add(kernel_tile_vec);
+            
+            pixel /= sum;
+            if (pixel < 0) pixel = 0;
+            if (pixel > 255) pixel = 255;
+            out_row[2*i+k] = pixel;
+        }
+    }
+}
 }

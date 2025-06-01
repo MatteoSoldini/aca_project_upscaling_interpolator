@@ -30,8 +30,8 @@ in_w_t =        np.int32
 in_h_t =        np.int32
 in_tile_t =     np.ndarray[(w,), np.dtype[np.uint8]]
 out_tile_t =    np.ndarray[(o_w,), np.dtype[np.uint8]]
-kernel_t =      np.ndarray[(kernel_count * kernel_size * kernel_size, ), np.dtype[np.uint16]]
-kernel_tile_t = np.ndarray[(2 * kernel_size * kernel_size, ), np.dtype[np.uint16]]
+kernel_t =      np.ndarray[(128, ), np.dtype[np.uint16]]
+kernel_tile_t = np.ndarray[(64, ), np.dtype[np.uint16]]
 
 #passthrough_fn = Kernel(
 #    "passthrough",
@@ -75,7 +75,7 @@ conv2d3k2x_fn = Kernel(
 )
 
 conv2d5k2x_fn = Kernel(
-    "conv2d5k2x",
+    "conv2d5k2x_aie",
     "kernel.o",
     [
         in_tile_t,  # in_row_0
