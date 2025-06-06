@@ -6,3 +6,4 @@
 * https://github.com/necst/I-Voted
 * https://docs.amd.com/v/u/en-US/wp506-ai-engine
 * https://xilinx.github.io/XRT/2024.2/html/index.html
+* https://xilinx.github.io/aie_api/index.html
