@@ -132,45 +132,55 @@ void conv2d5k2x_scalar(
 
 extern "C" {
 void conv2d5k2x_aie(
-    uint8_t *in_row_0,  // -2
-    uint8_t *in_row_1,  // -1 
-    uint8_t *in_row_2,  //  0
-    uint8_t *in_row_3,  //  1
-    uint8_t *in_row_4,  //  2
-    uint8_t *out_row, int32_t out_w,
-    int16_t *kernels    // [2, 5, 5] 32 bit aligned
+    uint8_t *in_row_0,  // -1
+    uint8_t *in_row_1,  //  0 
+    uint8_t *in_row_2,  //  1
+    uint8_t *in_row_3,  //  2
+    int16_t *c_mtx_row, int32_t num_c_mtx_row,
+    uint8_t *out_row, int32_t out_w
 ) {
-    aie::vector<int16_t, 64> kernel_vec = aie::load_v<64>(kernels);
-    aie::vector<int16_t, 32> in = aie::zeros<int16_t, 32>();
+    int32_t num_mul = num_c_mtx_row / 2 + num_c_mtx_row % 2;
+    int32_t scale_factor = num_c_mtx_row;    
 
-    for (uint32_t i = 0; i < out_w/2; i++) {
+    for (int32_t i = 0; i < out_w / scale_factor; i++) {
         // fill input vector
-        for (uint32_t k_x = 0; k_x < 5; k_x++) {
+        aie::vector<int16_t, 32> in_vec = aie::zeros<int16_t, 32>();
+        for (int32_t k_x = 0; k_x < 4; k_x++) {
+            
             // clamp
-            int32_t in_x = i + k_x - 2;
+            int32_t in_x = i + k_x - 1;
             if (in_x < 0) in_x = 0;
-            if (in_x > out_w/2 - 1) in_x = out_w/2 - 1;            
+            if (in_x > out_w/scale_factor - 1) in_x = out_w/scale_factor - 1;
+                    
+            for (int32_t p = 0; p < 2; p++) {
+                in_vec[16*p + k_x]      = in_row_0[in_x];
+                in_vec[16*p + 4 + k_x]  = in_row_1[in_x];
+                in_vec[16*p + 8 + k_x]  = in_row_2[in_x];
+                in_vec[16*p + 12 + k_x] = in_row_3[in_x];
+            }
+        }
 
-            in[5*k_x]     = in_row_0[in_x];
-            in[5*k_x + 1] = in_row_1[in_x];
-            in[5*k_x + 2] = in_row_2[in_x];
-            in[5*k_x + 3] = in_row_3[in_x];
-            in[5*k_x + 4] = in_row_4[in_x];
-        }
-        
-        // run the two convolutions
-        for (uint32_t k = 0; k < 2; k++) {
-            aie::vector<int16_t, 32> kernel_tile_vec = kernel_vec.extract<32>(k);
-            aie::accum<acc32, 32> s = aie::mul(in, kernel_tile_vec);
+        for (int32_t mul_i = 0; mul_i < num_mul; mul_i++) {
+            // fill c_mtx_row vector
+            aie::vector<int16_t, 32> c_mtx_vec = aie::load_v<32>(c_mtx_row + 32*mul_i);
             
-            int32_t pixel = aie::reduce_add(aie::to_vector<int32_t>(s));
-            int32_t sum = aie::reduce_add(kernel_tile_vec);
-            
-            pixel /= sum;
-            if (pixel < 0) pixel = 0;
-            if (pixel > 255) pixel = 255;
-            out_row[2*i+k] = pixel;
-        }
+            // run the two convolutions
+            aie::accum<acc32, 32> s = aie::mul(in_vec, c_mtx_vec);
+            aie::vector<int32_t, 32> s_vec = aie::to_vector<int32_t>(s);
+           
+            bool odd_mul = mul_i == num_mul - 1 && num_c_mtx_row % 2;
+            int32_t num_p = odd_mul ? 1 : 2;
+            for (int32_t p = 0; p < num_p; p++) {
+                int32_t pixel = aie::reduce_add(s_vec.extract<16>(p));
+                int32_t sum = aie::reduce_add(c_mtx_vec.extract<16>(p));
+                
+                pixel /= sum;
+                if (pixel < 0)   pixel = 0;
+                if (pixel > 255) pixel = 255;
+                out_row[num_c_mtx_row*i + 2*mul_i + p] = pixel;
+                //out_row[scale_factor*i + 2*mul_i + p] = in_row_1[i];
+            }
+        } 
     }
 }
 }

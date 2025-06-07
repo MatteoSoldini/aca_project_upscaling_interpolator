@@ -29,6 +29,7 @@ aiecc.py \
     aie.mlir
 
 clang++ \
+    -g -O0 \
     -I$XILINX_XRT/include \
     -I../deps \
     -L$XILINX_XRT/lib \

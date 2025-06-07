@@ -15,10 +15,11 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
 
-#define INPUT_FILE "input.bmp"
-#define SCALE_FACTOR 2.0f
+#define INPUT_FILE "input.jpg"
+#define SCALE_FACTOR 2.0f   // must be an integer value
 
 #define INT_SCALE (1 << 12)
+#define A 2
 
 std::vector<uint32_t> load_file(std::string file_path) {
     // Open file in binary mode
@@ -98,8 +99,8 @@ void lanczos(
             // convolve
             int32_t sum = 0;
             int32_t pixel = 0;
-            for (int32_t m = -a; m < a; m++) {
-                for (int32_t n = -a; n < a; n++) {
+            for (int32_t m = -a+1; m <= a; m++) {
+                for (int32_t n = -a+1; n <= a; n++) {
                     double x = in_x - i * ratio_x + m;
                     double y = in_y - j * ratio_y + n;
                     
@@ -141,8 +142,7 @@ int main(void) {
     uint32_t o_w = w * SCALE_FACTOR;
     uint32_t o_h = h * SCALE_FACTOR;
     uint32_t out_size = o_w * o_h;
-    uint32_t kernel_size = 5;    
-
+    
     printf("w: %u, h: %u, tot: %u\n", w, h, in_size);
 
     // set up the buffer objects
@@ -151,11 +151,13 @@ int main(void) {
     auto in_buf = xrt::bo(device, in_size * sizeof(uint8_t),
                         XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(3));
     auto out_buf = xrt::bo(device, out_size * sizeof(uint8_t),
-                         XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(5));
-    
-    // 4 5x5 kernel 32bit aligned
-    auto kernel_buf = xrt::bo(device, 128 * sizeof(int16_t),
                          XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(4));
+    
+    // 4x4 kernel
+    int32_t n_c_mtx = SCALE_FACTOR;
+    int32_t c_mtx_size = 16 * n_c_mtx * n_c_mtx;
+    auto c_mtx_buf = xrt::bo(device, c_mtx_size * sizeof(int16_t),
+                         XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(5));
 
     // Copy instruction stream to xrt buffer object
     void *instr_map = bo_instr.map<void *>();
@@ -168,25 +170,27 @@ int main(void) {
     uint8_t *out_map = out_buf.map<uint8_t *>();
     memset(out_map, 0, out_size * sizeof(uint8_t));
 
-    int16_t *kernel_map = kernel_buf.map<int16_t *>();
-    memset(kernel_map, 0, 128 * sizeof(int16_t));
+    int16_t *c_mtx_map = c_mtx_buf.map<int16_t *>();
+    memset(c_mtx_map, 0, c_mtx_size * sizeof(int16_t));
     
-    for (uint32_t x = 0; x < 2; x++) {
-        for (uint32_t y = 0; y < 2; y++) {
-            for (int32_t m = 0; m < kernel_size; m++) {
-                for (int32_t n = 0; n < kernel_size; n++) {
-                    uint32_t in_x = x / 2;
-                    uint32_t in_y = y / 2;
+    for (uint32_t x = 0; x < n_c_mtx; x++) {
+        for (uint32_t y = 0; y < n_c_mtx; y++) {
+            for (int32_t m = -A+1; m <= A; m++) {
+                for (int32_t n = -A+1; n <= A; n++) {
+                    uint32_t in_x = x / SCALE_FACTOR;
+                    uint32_t in_y = y / SCALE_FACTOR;
 
-                    double i = in_x - x * 0.5f + (m - 2);
-                    double j = in_y - y * 0.5f + (n - 2);
+                    double i = in_x - x * (1 / SCALE_FACTOR) + m;
+                    double j = in_y - y * (1 / SCALE_FACTOR) + n;
                     
-                    double weight = lanczos_kernel(i, 2) * lanczos_kernel(j, 2); 
-                    uint32_t idx = (x + y * 2) * 32 \
-                        + m * kernel_size \
-                        + n;
+                    double weight = lanczos_kernel(i, A) * lanczos_kernel(j, A); 
+                    uint32_t idx = (x + y * n_c_mtx) * 16 \
+                        + (n+1) * 2*A \
+                        + (m+1);
                     
-                    kernel_map[idx] = weight * INT_SCALE;
+                    printf("x=%lf, x=%lf> w=%lf\n", i, j, weight);                    
+                    
+                    c_mtx_map[idx] = weight * INT_SCALE;
                 }
             } 
         }
@@ -196,7 +200,7 @@ int main(void) {
     bo_instr.sync(XCL_BO_SYNC_BO_TO_DEVICE);
     in_buf.sync(XCL_BO_SYNC_BO_TO_DEVICE);
     out_buf.sync(XCL_BO_SYNC_BO_TO_DEVICE);
-    kernel_buf.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+    c_mtx_buf.sync(XCL_BO_SYNC_BO_TO_DEVICE);
     
     unsigned int opcode = 3; // ??
 
@@ -205,8 +209,8 @@ int main(void) {
         opcode,
         bo_instr, instr_v.size(),
         in_buf,
-        kernel_buf,
-        out_buf
+        out_buf,
+        c_mtx_buf
     );
     run.wait();
     auto stop = std::chrono::high_resolution_clock::now();
@@ -215,6 +219,7 @@ int main(void) {
     
     uint8_t *ref = (uint8_t *)malloc(o_w * o_h * sizeof(uint8_t));
     lanczos(pixels, w, h, ref, o_w, o_h, 2);
+    //neareast_neightbor(pixels, w, h, ref, o_w, o_h);
 
     stbi_write_bmp("ref_out.bmp", o_w, o_h, 1, ref);
     stbi_write_bmp("aie_out.bmp", o_w, o_h, 1, out_map);
@@ -224,7 +229,7 @@ int main(void) {
     int32_t err_y = -1;
     for (size_t y = 0; y < o_h; y++) {
         for (size_t x = 0; x < o_w; x++) {
-            if (abs(ref[x + y * o_w] - out_map[x + y * o_w]) > 1) {
+            if (ref[x + y * o_w] != out_map[x + y * o_w]) {
                 err_x = x;
                 err_y = y;
                 errors++;
