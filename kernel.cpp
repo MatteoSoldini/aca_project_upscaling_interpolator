@@ -82,25 +82,29 @@ void conv2d3k2x(
 }
 
 
-void conv2d5k2x_scalar(
-    uint8_t *in_row_0,  // -2
-    uint8_t *in_row_1,  // -1 
-    uint8_t *in_row_2,  //  0
-    uint8_t *in_row_3,  //  1
-    uint8_t *in_row_4,  //  2
-    uint8_t *out_row, int32_t out_w,
-    int16_t *kernels    // [2, 5, 5]
+
+extern "C" {
+#ifdef SCALAR
+void conv2d4k(
+    uint8_t *in_row_0,  // -1
+    uint8_t *in_row_1,  //  0 
+    uint8_t *in_row_2,  //  1
+    uint8_t *in_row_3,  //  2
+    int16_t *c_mtx_row, int32_t num_c_mtx_row,
+    uint8_t *out_row, int32_t out_w
 ) {
+    int32_t scale_factor = num_c_mtx_row;
+
     for (int32_t out_x = 0; out_x < out_w; out_x++) {
-        int32_t in_x = out_x / 2;
-        int32_t k_x = out_x % 2;
+        int32_t in_x = out_x / scale_factor;
+        int32_t k_x = out_x % scale_factor;
         
         int32_t pixel = 0;
         int32_t acc = 0;
-        for (int32_t m = 0; m < 5; m++) {
-            for (int32_t n = 0; n < 5; n++) {
-                int32_t idx = k_x * 25 + m * 5 + n;
-                int16_t w = kernels[idx];
+        for (int32_t m = 0; m < 4; m++) {
+            for (int32_t n = 0; n < 4; n++) {
+                int32_t idx = 16*k_x + 4*n + m;
+                int16_t w = c_mtx_row[idx];
                 acc += w;
 
                 // select row
@@ -109,12 +113,11 @@ void conv2d5k2x_scalar(
                 else if (n == 1) in_row = in_row_1;
                 else if (n == 2) in_row = in_row_2;
                 else if (n == 3) in_row = in_row_3;
-                else if (n == 4) in_row = in_row_4;
 
                 // clamp 
-                int32_t k_in_x = in_x + m - 2;
+                int32_t k_in_x = in_x + m - 1;
                 if (k_in_x < 0) k_in_x = 0;
-                if (k_in_x > out_w / 2 - 1) k_in_x = out_w / 2 - 1;
+                if (k_in_x > out_w / 2 - 1) k_in_x = out_w / scale_factor - 1;
               
                 pixel += (int32_t)(in_row[k_in_x]) * w;
             }
@@ -129,9 +132,8 @@ void conv2d5k2x_scalar(
         out_row[out_x] = pixel;
     }
 }
-
-extern "C" {
-void conv2d5k2x_aie(
+#else
+void conv2d4k(
     uint8_t *in_row_0,  // -1
     uint8_t *in_row_1,  //  0 
     uint8_t *in_row_2,  //  1
@@ -177,10 +179,11 @@ void conv2d5k2x_aie(
                 pixel /= sum;
                 if (pixel < 0)   pixel = 0;
                 if (pixel > 255) pixel = 255;
+                
                 out_row[num_c_mtx_row*i + 2*mul_i + p] = pixel;
-                //out_row[scale_factor*i + 2*mul_i + p] = in_row_1[i];
             }
         } 
     }
 }
+#endif
 }
